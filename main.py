@@ -1,9 +1,8 @@
 import os
 import json
-import math
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -35,7 +34,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY", "")
 COINGLASS_BASE_URL = os.getenv("COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com/api")
-BINANCE_BASE_URL = os.getenv("BINANCE_BASE_URL", "https://fapi.binance.com")
+
+BINANCE_MARKET_TYPE = os.getenv("BINANCE_MARKET_TYPE", "auto").lower()
 
 
 @dataclass
@@ -77,25 +77,54 @@ def send_telegram(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=20)
+    requests.post(
+        url,
+        json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+        timeout=20
+    )
 
 
 def fetch_ohlcv(symbol: str, interval: str = "15m", limit: int = 500) -> pd.DataFrame:
-    url = f"{BINANCE_BASE_URL}/fapi/v1/klines"
+    endpoint_map = {
+        "futures": [("futures", "https://fapi.binance.com/fapi/v1/klines")],
+        "spot": [("spot", "https://api.binance.com/api/v3/klines")],
+        "auto": [
+            ("futures", "https://fapi.binance.com/fapi/v1/klines"),
+            ("spot", "https://api.binance.com/api/v3/klines"),
+        ],
+    }
+
+    endpoints = endpoint_map.get(BINANCE_MARKET_TYPE, endpoint_map["auto"])
     params = {"symbol": symbol, "interval": interval, "limit": limit}
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    raw = r.json()
-    cols = [
-        "open_time", "open", "high", "low", "close", "volume", "close_time",
-        "quote_asset_volume", "n_trades", "taker_buy_base", "taker_buy_quote", "ignore"
-    ]
-    df = pd.DataFrame(raw, columns=cols)
-    for c in ["open", "high", "low", "close", "volume"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
-    return df
+    last_error = None
+
+    for market_type, url in endpoints:
+        try:
+            r = requests.get(url, params=params, timeout=20)
+            r.raise_for_status()
+            raw = r.json()
+
+            cols = [
+                "open_time", "open", "high", "low", "close", "volume", "close_time",
+                "quote_asset_volume", "n_trades", "taker_buy_base", "taker_buy_quote", "ignore"
+            ]
+            df = pd.DataFrame(raw, columns=cols)
+
+            for c in [
+                "open", "high", "low", "close", "volume",
+                "quote_asset_volume", "taker_buy_base", "taker_buy_quote"
+            ]:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+
+            df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
+            df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
+            df["market_type"] = market_type
+            return df
+
+        except Exception as e:
+            last_error = e
+
+    raise RuntimeError(f"Falha ao buscar candles para {symbol}. Último erro: {last_error}")
 
 
 def coinglass_get(path: str, params: Optional[dict] = None) -> dict:
@@ -452,7 +481,12 @@ def manage_position(pos: Position, last_price: float, last_atr: float, equity: f
             "price": round(active_stop, 4),
             "pnl": round(pnl, 2)
         })
-        send_telegram(f"🔴 <b>SAÍDA {pos.symbol}</b>\nMotivo: {'TRAILING' if pos.trailing_active else 'STOP'}\nPreço: <code>{active_stop:.2f}</code>\nPnL: <code>{pnl:.2f}</code>")
+        send_telegram(
+            f"🔴 <b>SAÍDA {pos.symbol}</b>\n"
+            f"Motivo: {'TRAILING' if pos.trailing_active else 'STOP'}\n"
+            f"Preço: <code>{active_stop:.2f}</code>\n"
+            f"PnL: <code>{pnl:.2f}</code>"
+        )
         pos.remaining_qty = 0
         pos.status = "CLOSED"
         return pos, equity
@@ -464,7 +498,12 @@ def manage_position(pos: Position, last_price: float, last_atr: float, equity: f
         pos.tp1_done = True
         pos.stop = pos.entry
         push_event(state, {"type": "TP1", "symbol": pos.symbol, "price": round(pos.tp1, 4), "pnl": round(pnl, 2)})
-        send_telegram(f"📌 <b>TP1 {pos.symbol}</b>\nPreço: <code>{pos.tp1:.2f}</code>\nParcial: <code>{pos.tp1_qty:.6f}</code>\nStop movido para entrada.")
+        send_telegram(
+            f"📌 <b>TP1 {pos.symbol}</b>\n"
+            f"Preço: <code>{pos.tp1:.2f}</code>\n"
+            f"Parcial: <code>{pos.tp1_qty:.6f}</code>\n"
+            f"Stop movido para entrada."
+        )
 
     if pos.tp1_done and (not pos.tp2_done) and price_crossed(pos.side, last_price, pos.tp2):
         pnl = calc_pnl(pos.side, pos.entry, pos.tp2, pos.tp2_qty)
@@ -472,7 +511,11 @@ def manage_position(pos: Position, last_price: float, last_atr: float, equity: f
         pos.remaining_qty -= pos.tp2_qty
         pos.tp2_done = True
         push_event(state, {"type": "TP2", "symbol": pos.symbol, "price": round(pos.tp2, 4), "pnl": round(pnl, 2)})
-        send_telegram(f"📌 <b>TP2 {pos.symbol}</b>\nPreço: <code>{pos.tp2:.2f}</code>\nParcial: <code>{pos.tp2_qty:.6f}</code>")
+        send_telegram(
+            f"📌 <b>TP2 {pos.symbol}</b>\n"
+            f"Preço: <code>{pos.tp2:.2f}</code>\n"
+            f"Parcial: <code>{pos.tp2_qty:.6f}</code>"
+        )
 
     if pos.tp2_done and (not pos.tp3_done) and price_crossed(pos.side, last_price, pos.tp3):
         pnl = calc_pnl(pos.side, pos.entry, pos.tp3, pos.tp3_qty)
@@ -480,9 +523,17 @@ def manage_position(pos: Position, last_price: float, last_atr: float, equity: f
         pos.remaining_qty -= pos.tp3_qty
         pos.tp3_done = True
         pos.trailing_active = True
-        pos.trailing_stop = max(pos.entry, last_price - ATR_MULT * last_atr) if pos.side == "LONG" else min(pos.entry, last_price + ATR_MULT * last_atr)
+        pos.trailing_stop = (
+            max(pos.entry, last_price - ATR_MULT * last_atr)
+            if pos.side == "LONG"
+            else min(pos.entry, last_price + ATR_MULT * last_atr)
+        )
         push_event(state, {"type": "TP3", "symbol": pos.symbol, "price": round(pos.tp3, 4), "pnl": round(pnl, 2)})
-        send_telegram(f"📌 <b>TP3 {pos.symbol}</b>\nPreço: <code>{pos.tp3:.2f}</code>\nTrailing ativado em <code>{pos.trailing_stop:.2f}</code>")
+        send_telegram(
+            f"📌 <b>TP3 {pos.symbol}</b>\n"
+            f"Preço: <code>{pos.tp3:.2f}</code>\n"
+            f"Trailing ativado em <code>{pos.trailing_stop:.2f}</code>"
+        )
 
     if pos.trailing_active and pos.remaining_qty > 0:
         if pos.side == "LONG":
@@ -507,7 +558,8 @@ def write_dashboard_json(state: dict, snapshots: dict):
             "tp1_pct": TP1_PCT,
             "tp2_pct": TP2_PCT,
             "tp3_pct": TP3_PCT,
-            "runner_pct": RUNNER_PCT
+            "runner_pct": RUNNER_PCT,
+            "binance_market_type": BINANCE_MARKET_TYPE,
         }
     }
     OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
@@ -521,43 +573,55 @@ def main():
     snapshots = {}
 
     for symbol in SYMBOLS:
-        df = fetch_ohlcv(symbol, TIMEFRAME, MAX_BARS)
-        signal = generate_signal(df, symbol)
-        last_price = float(df.iloc[-1]["close"])
-        last_atr = float(atr(df, 14).iloc[-1])
+        try:
+            df = fetch_ohlcv(symbol, TIMEFRAME, MAX_BARS)
+            signal = generate_signal(df, symbol)
+            last_price = float(df.iloc[-1]["close"])
+            last_atr = float(atr(df, 14).iloc[-1])
 
-        if symbol in positions and positions[symbol].get("status") == "OPEN":
-            pos = Position(**positions[symbol])
-            pos, equity = manage_position(pos, last_price, last_atr, equity, state)
-            if pos.status == "CLOSED":
-                positions.pop(symbol, None)
-            else:
+            if symbol in positions and positions[symbol].get("status") == "OPEN":
+                pos = Position(**positions[symbol])
+                pos, equity = manage_position(pos, last_price, last_atr, equity, state)
+                if pos.status == "CLOSED":
+                    positions.pop(symbol, None)
+                else:
+                    positions[symbol] = asdict(pos)
+
+            elif signal and signal.get("side") in ("LONG", "SHORT"):
+                pos = build_position(signal, equity)
                 positions[symbol] = asdict(pos)
+                push_event(state, {
+                    "type": "ENTRY",
+                    "symbol": symbol,
+                    "side": pos.side,
+                    "entry": round(pos.entry, 4),
+                    "stop": round(pos.stop, 4),
+                    "tp1": round(pos.tp1, 4),
+                    "tp2": round(pos.tp2, 4),
+                    "tp3": round(pos.tp3, 4)
+                })
+                send_telegram(
+                    f"🟢 <b>ENTRADA {pos.side}</b>\n"
+                    f"{symbol} | 15m\n"
+                    f"Entry: <code>{pos.entry:.2f}</code>\n"
+                    f"Stop: <code>{pos.stop:.2f}</code>\n"
+                    f"TP1: <code>{pos.tp1:.2f}</code>\n"
+                    f"TP2: <code>{pos.tp2:.2f}</code>\n"
+                    f"TP3: <code>{pos.tp3:.2f}</code>"
+                )
 
-        elif signal and signal.get("side") in ("LONG", "SHORT"):
-            pos = build_position(signal, equity)
-            positions[symbol] = asdict(pos)
-            push_event(state, {
-                "type": "ENTRY",
+            snapshots[symbol] = signal if signal is not None else {
                 "symbol": symbol,
-                "side": pos.side,
-                "entry": round(pos.entry, 4),
-                "stop": round(pos.stop, 4),
-                "tp1": round(pos.tp1, 4),
-                "tp2": round(pos.tp2, 4),
-                "tp3": round(pos.tp3, 4)
-            })
-            send_telegram(
-                f"🟢 <b>ENTRADA {pos.side}</b>\n"
-                f"{symbol} | 15m\n"
-                f"Entry: <code>{pos.entry:.2f}</code>\n"
-                f"Stop: <code>{pos.stop:.2f}</code>\n"
-                f"TP1: <code>{pos.tp1:.2f}</code>\n"
-                f"TP2: <code>{pos.tp2:.2f}</code>\n"
-                f"TP3: <code>{pos.tp3:.2f}</code>"
-            )
+                "side": "ERROR",
+                "error": "signal_none"
+            }
 
-        snapshots[symbol] = signal
+        except Exception as e:
+            snapshots[symbol] = {
+                "symbol": symbol,
+                "side": "ERROR",
+                "error": str(e)[:300]
+            }
 
     state["equity"] = equity
     state["positions"] = positions
