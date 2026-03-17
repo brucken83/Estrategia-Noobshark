@@ -1,0 +1,59 @@
+name: update-monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-monitor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Restore runtime state
+        run: |
+          if [ -f runtime_state.json ]; then
+            echo "runtime_state.json found"
+          else
+            echo '{"equity":100000,"positions":{},"events":[]}' > runtime_state.json
+          fi
+
+      - name: Run monitor
+        env:
+          SYMBOLS: ${{ secrets.SYMBOLS }}
+          TIMEFRAME: ${{ secrets.TIMEFRAME }}
+          INITIAL_EQUITY: ${{ secrets.INITIAL_EQUITY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
+          BINANCE_BASE_URL: https://fapi.binance.com
+          COINGLASS_BASE_URL: https://open-api-v4.coinglass.com/api
+          STATE_FILE: runtime_state.json
+          OUTPUT_JSON: docs/data/latest.json
+          ENABLE_SENTIMENT: true
+        run: python main.py
+
+      - name: Commit updated state and dashboard data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add runtime_state.json docs/data/latest.json
+          git diff --staged --quiet || git commit -m "Update monitor data"
+          git push
