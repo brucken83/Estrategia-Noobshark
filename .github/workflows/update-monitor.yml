@@ -44,6 +44,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
           BINANCE_BASE_URL: https://fapi.binance.com
+          BINANCE_MARKET_TYPE: ${{ vars.BINANCE_MARKET_TYPE }}
           COINGLASS_BASE_URL: https://open-api-v4.coinglass.com/api
           STATE_FILE: runtime_state.json
           OUTPUT_JSON: docs/data/latest.json
