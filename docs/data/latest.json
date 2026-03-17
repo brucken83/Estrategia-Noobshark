@@ -1,5 +1,5 @@
 {
-  "updated_at_utc": "2026-03-17T19:57:44.841517+00:00",
+  "updated_at_utc": "2026-03-17T20:35:45.145645+00:00",
   "equity": 100000.0,
   "positions": {},
   "events": [],
@@ -22,10 +22,15 @@
     ],
     "timeframe": "15m",
     "risk_pct": 0.005,
+    "base_risk_pct": 0.005,
+    "medium_risk_pct": 0.0035,
+    "low_risk_pct": 0.002,
+    "min_sentiment_score": 3,
     "tp1_pct": 0.4,
     "tp2_pct": 0.25,
     "tp3_pct": 0.25,
     "runner_pct": 0.1,
-    "binance_market_type": ""
+    "binance_market_type": "",
+    "coinglass_interval": "4h"
   }
 }
