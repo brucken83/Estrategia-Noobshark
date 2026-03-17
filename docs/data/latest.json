@@ -1,16 +1,31 @@
 {
-  "updated_at_utc": "2026-03-17T19:04:46.485996+00:00",
+  "updated_at_utc": "2026-03-17T19:20:46.144930+00:00",
   "equity": 100000.0,
   "positions": {},
   "events": [],
-  "snapshots": {},
+  "snapshots": {
+    "BTCUSDT": {
+      "symbol": "BTCUSDT",
+      "side": "ERROR",
+      "error": "Falha ao buscar candles para BTCUSDT. \u00daltimo erro: 451 Client Error:  for url: https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=500"
+    },
+    "ETHUSDT": {
+      "symbol": "ETHUSDT",
+      "side": "ERROR",
+      "error": "Falha ao buscar candles para ETHUSDT. \u00daltimo erro: 451 Client Error:  for url: https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=15m&limit=500"
+    }
+  },
   "config": {
-    "symbols": [],
-    "timeframe": "",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "timeframe": "15m",
     "risk_pct": 0.005,
     "tp1_pct": 0.4,
     "tp2_pct": 0.25,
     "tp3_pct": 0.25,
-    "runner_pct": 0.1
+    "runner_pct": 0.1,
+    "binance_market_type": ""
   }
 }
