@@ -1,15 +1,12 @@
 {
-  "updated_at_utc": null,
-  "equity": 100000,
+  "updated_at_utc": "2026-03-17T19:04:46.485996+00:00",
+  "equity": 100000.0,
   "positions": {},
   "events": [],
   "snapshots": {},
   "config": {
-    "symbols": [
-      "BTCUSDT",
-      "ETHUSDT"
-    ],
-    "timeframe": "15m",
+    "symbols": [],
+    "timeframe": "",
     "risk_pct": 0.005,
     "tp1_pct": 0.4,
     "tp2_pct": 0.25,

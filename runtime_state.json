@@ -1,5 +1,5 @@
 {
-  "equity": 100000,
+  "equity": 100000.0,
   "positions": {},
   "events": []
 }
