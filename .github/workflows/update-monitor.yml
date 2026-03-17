@@ -13,8 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  run-bot:
+  run-monitor:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,34 +25,52 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore runtime state
+      - name: Ensure state file exists
         run: |
-          if [ -f runtime_state.json ]; then
-            echo "runtime_state.json found"
-          else
+          if [ ! -f runtime_state.json ]; then
             echo '{"equity":100000,"positions":{},"events":[]}' > runtime_state.json
           fi
 
       - name: Run monitor
         env:
-          SYMBOLS: ${{ secrets.SYMBOLS }}
-          TIMEFRAME: ${{ secrets.TIMEFRAME }}
-          INITIAL_EQUITY: ${{ secrets.INITIAL_EQUITY }}
+          SYMBOLS: ${{ vars.SYMBOLS }}
+          TIMEFRAME: ${{ vars.TIMEFRAME }}
+          INITIAL_EQUITY: ${{ vars.INITIAL_EQUITY }}
+
+          RISK_PCT: ${{ vars.RISK_PCT }}
+          BASE_RISK_PCT: ${{ vars.BASE_RISK_PCT }}
+          MEDIUM_RISK_PCT: ${{ vars.MEDIUM_RISK_PCT }}
+          LOW_RISK_PCT: ${{ vars.LOW_RISK_PCT }}
+          MIN_SENTIMENT_SCORE: ${{ vars.MIN_SENTIMENT_SCORE }}
+
+          TP1_PCT: ${{ vars.TP1_PCT }}
+          TP2_PCT: ${{ vars.TP2_PCT }}
+          TP3_PCT: ${{ vars.TP3_PCT }}
+          RUNNER_PCT: ${{ vars.RUNNER_PCT }}
+          ATR_MULT: ${{ vars.ATR_MULT }}
+
+          MAX_BARS: ${{ vars.MAX_BARS }}
+          VWAP_WHALE_MULT: ${{ vars.VWAP_WHALE_MULT }}
+          POC_BINS: ${{ vars.POC_BINS }}
+          ENTRY_OFFSET_BPS: ${{ vars.ENTRY_OFFSET_BPS }}
+          ENABLE_SENTIMENT: ${{ vars.ENABLE_SENTIMENT }}
+
+          BINANCE_MARKET_TYPE: ${{ vars.BINANCE_MARKET_TYPE }}
+          COINGLASS_INTERVAL: ${{ vars.COINGLASS_INTERVAL }}
+
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           COINGLASS_API_KEY: ${{ secrets.COINGLASS_API_KEY }}
-          BINANCE_BASE_URL: https://fapi.binance.com
-          BINANCE_MARKET_TYPE: ${{ vars.BINANCE_MARKET_TYPE }}
-          COINGLASS_BASE_URL: https://open-api-v4.coinglass.com/api
+
           STATE_FILE: runtime_state.json
           OUTPUT_JSON: docs/data/latest.json
-          ENABLE_SENTIMENT: true
+          COINGLASS_BASE_URL: https://open-api-v4.coinglass.com/api
         run: python main.py
 
-      - name: Commit updated state and dashboard data
+      - name: Commit updated files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
