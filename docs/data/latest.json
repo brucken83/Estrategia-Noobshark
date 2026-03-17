@@ -1,5 +1,5 @@
 {
-  "updated_at_utc": "2026-03-17T20:35:45.145645+00:00",
+  "updated_at_utc": "2026-03-17T21:02:23.813342+00:00",
   "equity": 100000.0,
   "positions": {},
   "events": [],
@@ -30,7 +30,7 @@
     "tp2_pct": 0.25,
     "tp3_pct": 0.25,
     "runner_pct": 0.1,
-    "binance_market_type": "",
+    "binance_market_type": "spot",
     "coinglass_interval": "4h"
   }
 }
