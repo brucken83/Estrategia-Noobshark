@@ -11,14 +11,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# =========================
+# CONFIG
+# =========================
 SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
 TIMEFRAME = os.getenv("TIMEFRAME", "15m")
 INITIAL_EQUITY = float(os.getenv("INITIAL_EQUITY", "100000"))
+
+# Risco base e risco dinâmico por score
 RISK_PCT = float(os.getenv("RISK_PCT", "0.005"))
+BASE_RISK_PCT = float(os.getenv("BASE_RISK_PCT", "0.005"))      # 0.50%
+MEDIUM_RISK_PCT = float(os.getenv("MEDIUM_RISK_PCT", "0.0035")) # 0.35%
+LOW_RISK_PCT = float(os.getenv("LOW_RISK_PCT", "0.002"))        # 0.20%
+MIN_SENTIMENT_SCORE = int(os.getenv("MIN_SENTIMENT_SCORE", "3"))
+
 TP1_PCT = float(os.getenv("TP1_PCT", "0.40"))
 TP2_PCT = float(os.getenv("TP2_PCT", "0.25"))
 TP3_PCT = float(os.getenv("TP3_PCT", "0.25"))
 RUNNER_PCT = float(os.getenv("RUNNER_PCT", "0.10"))
+
 ATR_MULT = float(os.getenv("ATR_MULT", "1.0"))
 MAX_BARS = int(os.getenv("MAX_BARS", "500"))
 VWAP_WHALE_MULT = float(os.getenv("VWAP_WHALE_MULT", "2.0"))
@@ -35,9 +46,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY", "")
 COINGLASS_BASE_URL = os.getenv("COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com/api")
 
-BINANCE_MARKET_TYPE = os.getenv("BINANCE_MARKET_TYPE", "auto").lower()
+# Use spot no GitHub para evitar erro 451 em futures
+BINANCE_MARKET_TYPE = os.getenv("BINANCE_MARKET_TYPE", "spot").lower()
+
+# Hobbyist da CoinGlass: 4h, 6h, 8h, 12h, 1d, 1w
+COINGLASS_INTERVAL = os.getenv("COINGLASS_INTERVAL", "4h")
 
 
+# =========================
+# MODELS
+# =========================
 @dataclass
 class Position:
     symbol: str
@@ -63,6 +81,9 @@ class Position:
     status: str = "OPEN"
 
 
+# =========================
+# STATE
+# =========================
 def load_state() -> dict:
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -73,17 +94,26 @@ def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+# =========================
+# TELEGRAM
+# =========================
 def send_telegram(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    requests.post(
-        url,
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
-        timeout=20
-    )
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        requests.post(
+            url,
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=20,
+        )
+    except Exception:
+        pass
 
 
+# =========================
+# MARKET DATA
+# =========================
 def fetch_ohlcv(symbol: str, interval: str = "15m", limit: int = 500) -> pd.DataFrame:
     endpoint_map = {
         "futures": [("futures", "https://fapi.binance.com/fapi/v1/klines")],
@@ -94,7 +124,7 @@ def fetch_ohlcv(symbol: str, interval: str = "15m", limit: int = 500) -> pd.Data
         ],
     }
 
-    endpoints = endpoint_map.get(BINANCE_MARKET_TYPE, endpoint_map["auto"])
+    endpoints = endpoint_map.get(BINANCE_MARKET_TYPE, endpoint_map["spot"])
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     last_error = None
 
@@ -105,14 +135,30 @@ def fetch_ohlcv(symbol: str, interval: str = "15m", limit: int = 500) -> pd.Data
             raw = r.json()
 
             cols = [
-                "open_time", "open", "high", "low", "close", "volume", "close_time",
-                "quote_asset_volume", "n_trades", "taker_buy_base", "taker_buy_quote", "ignore"
+                "open_time",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "close_time",
+                "quote_asset_volume",
+                "n_trades",
+                "taker_buy_base",
+                "taker_buy_quote",
+                "ignore",
             ]
             df = pd.DataFrame(raw, columns=cols)
 
             for c in [
-                "open", "high", "low", "close", "volume",
-                "quote_asset_volume", "taker_buy_base", "taker_buy_quote"
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume",
+                "quote_asset_volume",
+                "taker_buy_base",
+                "taker_buy_quote",
             ]:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
@@ -148,33 +194,47 @@ def fetch_lsr(symbol: str) -> Optional[float]:
     if not COINGLASS_API_KEY:
         return None
     try:
-        data = coinglass_get("/futures/global-long-short-account-ratio/history", {
-            "symbol": symbol, "interval": "15m", "limit": 3
-        })
-        rows = data.get("data") or data.get("result") or []
+        data = coinglass_get(
+            "/futures/global-long-short-account-ratio/history",
+            {"symbol": symbol, "interval": COINGLASS_INTERVAL, "limit": 3},
+        )
+
+        if str(data.get("code")) != "0":
+            return None
+
+        rows = data.get("data") or []
         if isinstance(rows, dict):
             rows = rows.get("list", [])
+
         if not rows:
             return None
+
         last = rows[-1]
         for k in ("longShortRatio", "long_short_ratio", "ratio", "value"):
             if k in last:
                 return float(last[k])
+
+        return None
     except Exception:
         return None
-    return None
 
 
 def fetch_oi_change_pct(symbol: str) -> Optional[float]:
     if not COINGLASS_API_KEY:
         return None
     try:
-        data = coinglass_get("/futures/open-interest/aggregated-history", {
-            "symbol": symbol, "interval": "15m", "limit": 3
-        })
-        rows = data.get("data") or data.get("result") or []
+        data = coinglass_get(
+            "/futures/open-interest/aggregated-history",
+            {"symbol": symbol, "interval": COINGLASS_INTERVAL, "limit": 3},
+        )
+
+        if str(data.get("code")) != "0":
+            return None
+
+        rows = data.get("data") or []
         if isinstance(rows, dict):
             rows = rows.get("list", [])
+
         if len(rows) < 2:
             return None
 
@@ -187,11 +247,15 @@ def fetch_oi_change_pct(symbol: str) -> Optional[float]:
         a, b = extract(rows[-2]), extract(rows[-1])
         if a is None or b is None or a == 0:
             return None
+
         return (b - a) / a * 100
     except Exception:
         return None
 
 
+# =========================
+# INDICATORS
+# =========================
 def ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
 
@@ -239,6 +303,7 @@ def detect_structure(df: pd.DataFrame, lookback: int = 20) -> str:
     ll = lows.iloc[-1] < lows.iloc[:-1].min()
     higher_low = lows.iloc[-5:].min() > lows.iloc[-10:-5].min() if len(lows) >= 10 else False
     lower_high = highs.iloc[-5:].max() < highs.iloc[-10:-5].max() if len(highs) >= 10 else False
+
     if hh or higher_low:
         return "BULLISH"
     if ll or lower_high:
@@ -253,21 +318,125 @@ def whale_vwap(df: pd.DataFrame, volume_mult: float = 2.0, lookback: int = 120) 
     whale_idx = recent.index[whale_mask.fillna(False)]
     if len(whale_idx) == 0:
         return None
+
     idx = whale_idx[-1]
     chunk = recent.loc[idx:]
-    tp = (chunk["high"] + chunk["low"] + chunk["close"]) / 3
-    return float((tp * chunk["volume"]).sum() / chunk["volume"].sum())
+    typical_price = (chunk["high"] + chunk["low"] + chunk["close"]) / 3
+    return float((typical_price * chunk["volume"]).sum() / chunk["volume"].sum())
 
 
 def trend_poc(df: pd.DataFrame, bins: int = 40, lookback: int = 120) -> Optional[float]:
     recent = df.tail(lookback).copy()
     if recent.empty:
         return None
+
     hist, edges = np.histogram(recent["close"].values, bins=bins, weights=recent["volume"].values)
     idx = int(np.argmax(hist))
     return float((edges[idx] + edges[idx + 1]) / 2)
 
 
+# =========================
+# SENTIMENT SCORE
+# =========================
+def safe_bool(condition) -> int:
+    return 1 if condition else 0
+
+
+def score_liquidation_proxy(df: pd.DataFrame, side: str, lookback: int = 3) -> int:
+    if len(df) < 25:
+        return 0
+
+    recent = df.tail(lookback)
+    row = recent.iloc[-1]
+
+    candle_range = float(row["high"] - row["low"])
+    avg_range = float((df["high"] - df["low"]).tail(20).mean())
+
+    if side == "LONG":
+        condition = row["close"] > row["open"] and candle_range > avg_range * 1.3
+        return safe_bool(condition)
+
+    condition = row["close"] < row["open"] and candle_range > avg_range * 1.3
+    return safe_bool(condition)
+
+
+def score_oi_context(side: str, oi_change_pct: Optional[float], price_now: float, price_prev: float) -> int:
+    if oi_change_pct is None:
+        return 0
+
+    if side == "LONG":
+        if price_now > price_prev and oi_change_pct > 0:
+            return 1
+        if price_now > price_prev and oi_change_pct > -1.0:
+            return 1
+        return 0
+
+    if price_now < price_prev and oi_change_pct > 0:
+        return 1
+    if price_now < price_prev and oi_change_pct < 0:
+        return 1
+    return 0
+
+
+def score_lsr(side: str, lsr: Optional[float]) -> int:
+    if lsr is None:
+        return 0
+
+    if side == "LONG":
+        return safe_bool(lsr < 1.8)
+    return safe_bool(lsr > 0.7)
+
+
+def score_funding_proxy(side: str, lsr: Optional[float]) -> int:
+    if lsr is None:
+        return 0
+
+    if side == "LONG":
+        return safe_bool(lsr <= 1.2)
+    return safe_bool(lsr >= 1.1)
+
+
+def score_cvd(side: str, cvd_slope_val: float) -> int:
+    if side == "LONG":
+        return safe_bool(cvd_slope_val > 0)
+    return safe_bool(cvd_slope_val < 0)
+
+
+def sentiment_score(
+    df: pd.DataFrame,
+    side: str,
+    lsr: Optional[float],
+    oi_change_pct: Optional[float],
+    cvd_slope_val: float,
+) -> dict:
+    row = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    score_breakdown = {
+        "funding_proxy": score_funding_proxy(side, lsr),
+        "cvd": score_cvd(side, cvd_slope_val),
+        "liquidation_proxy": score_liquidation_proxy(df, side),
+        "oi_context": score_oi_context(side, oi_change_pct, float(row["close"]), float(prev["close"])),
+        "lsr": score_lsr(side, lsr),
+    }
+
+    total = int(sum(score_breakdown.values()))
+    return {"total": total, "breakdown": score_breakdown}
+
+
+def risk_pct_from_score(score: int) -> float:
+    if score >= 5:
+        return BASE_RISK_PCT
+    if score == 4:
+        return MEDIUM_RISK_PCT
+    if score == 3:
+        return LOW_RISK_PCT
+    return 0.0
+
+
+# =========================
+# STRATEGY
+# =========================
 def side_filters(side: str, lsr, oi_change_pct, fng, cvd_slope_val) -> bool:
     if side == "LONG":
         if lsr is not None and lsr > 1.8:
@@ -296,6 +465,7 @@ def generate_signal(df: pd.DataFrame, symbol: str):
     df["ema200"] = ema(df["close"], 200)
     df["atr14"] = atr(df, 14)
     df["rsi14"] = rsi(df["close"], 14)
+
     mid, kup, klo = keltner(df, 20, 20, 1.5)
     df["keltner_mid"] = mid
     df["keltner_up"] = kup
@@ -308,38 +478,50 @@ def generate_signal(df: pd.DataFrame, symbol: str):
     lsr = fetch_lsr(symbol) if ENABLE_SENTIMENT else None
     oi_change_pct = fetch_oi_change_pct(symbol) if ENABLE_SENTIMENT else None
     fng = fetch_fng() if ENABLE_SENTIMENT else None
+
     cvd = approximate_cvd(df)
     cvd_slope_val = cvd_slope(cvd, 5)
 
+    long_sent = sentiment_score(df, "LONG", lsr, oi_change_pct, cvd_slope_val)
+    short_sent = sentiment_score(df, "SHORT", lsr, oi_change_pct, cvd_slope_val)
+
+    long_risk_pct = risk_pct_from_score(long_sent["total"])
+    short_risk_pct = risk_pct_from_score(short_sent["total"])
+
     row = df.iloc[-1]
     prev = df.iloc[-2]
+
     price = float(row["close"])
     atr_now = float(row["atr14"]) if not np.isnan(row["atr14"]) else None
     if atr_now is None or atr_now == 0:
         return None
 
     long_context = (
-        price > float(row["ema200"]) and
-        float(row["ema20"]) > float(prev["ema20"]) and
-        structure == "BULLISH" and
-        (poc is None or price >= poc * 0.997) and
-        side_filters("LONG", lsr, oi_change_pct, fng, cvd_slope_val)
+        price > float(row["ema200"])
+        and float(row["ema20"]) > float(prev["ema20"])
+        and structure == "BULLISH"
+        and (poc is None or price >= poc * 0.997)
+        and side_filters("LONG", lsr, oi_change_pct, fng, cvd_slope_val)
+        and long_sent["total"] >= MIN_SENTIMENT_SCORE
     )
 
     short_context = (
-        price < float(row["ema200"]) and
-        float(row["ema20"]) < float(prev["ema20"]) and
-        structure == "BEARISH" and
-        (poc is None or price <= poc * 1.003) and
-        side_filters("SHORT", lsr, oi_change_pct, fng, cvd_slope_val)
+        price < float(row["ema200"])
+        and float(row["ema20"]) < float(prev["ema20"])
+        and structure == "BEARISH"
+        and (poc is None or price <= poc * 1.003)
+        and side_filters("SHORT", lsr, oi_change_pct, fng, cvd_slope_val)
+        and short_sent["total"] >= MIN_SENTIMENT_SCORE
     )
 
-    near_level = any([
-        abs(price - float(row["ema20"])) <= 0.35 * atr_now,
-        abs(price - float(row["keltner_mid"])) <= 0.35 * atr_now,
-        poc is not None and abs(price - poc) <= 0.35 * atr_now,
-        wvwap is not None and abs(price - wvwap) <= 0.35 * atr_now,
-    ])
+    near_level = any(
+        [
+            abs(price - float(row["ema20"])) <= 0.35 * atr_now,
+            abs(price - float(row["keltner_mid"])) <= 0.35 * atr_now,
+            poc is not None and abs(price - poc) <= 0.35 * atr_now,
+            wvwap is not None and abs(price - wvwap) <= 0.35 * atr_now,
+        ]
+    )
 
     bullish_candle = row["close"] > row["open"] and row["close"] > prev["high"]
     bearish_candle = row["close"] < row["open"] and row["close"] < prev["low"]
@@ -369,7 +551,10 @@ def generate_signal(df: pd.DataFrame, symbol: str):
                 "lsr": lsr,
                 "oi_change_pct": oi_change_pct,
                 "fng": fng,
-                "cvd_slope": cvd_slope_val
+                "cvd_slope": cvd_slope_val,
+                "sentiment_score": long_sent["total"],
+                "sentiment_breakdown": long_sent["breakdown"],
+                "risk_pct": long_risk_pct,
             }
 
     if short_context and near_level and bearish_candle:
@@ -397,7 +582,10 @@ def generate_signal(df: pd.DataFrame, symbol: str):
                 "lsr": lsr,
                 "oi_change_pct": oi_change_pct,
                 "fng": fng,
-                "cvd_slope": cvd_slope_val
+                "cvd_slope": cvd_slope_val,
+                "sentiment_score": short_sent["total"],
+                "sentiment_breakdown": short_sent["breakdown"],
+                "risk_pct": short_risk_pct,
             }
 
     return {
@@ -412,16 +600,25 @@ def generate_signal(df: pd.DataFrame, symbol: str):
         "lsr": lsr,
         "oi_change_pct": oi_change_pct,
         "fng": fng,
-        "cvd_slope": cvd_slope_val
+        "cvd_slope": cvd_slope_val,
+        "long_sentiment_score": long_sent["total"],
+        "short_sentiment_score": short_sent["total"],
+        "long_sentiment_breakdown": long_sent["breakdown"],
+        "short_sentiment_breakdown": short_sent["breakdown"],
     }
 
 
+# =========================
+# EXECUTION
+# =========================
 def build_position(signal: dict, equity: float) -> Position:
     entry = signal["entry"]
     stop = signal["stop"]
     side = signal["side"]
     R = abs(entry - stop)
-    risk_amount = equity * RISK_PCT
+
+    risk_pct = float(signal.get("risk_pct", RISK_PCT))
+    risk_amount = equity * risk_pct
     qty = risk_amount / R
 
     if side == "LONG":
@@ -448,7 +645,7 @@ def build_position(signal: dict, equity: float) -> Position:
         tp2_qty=qty * TP2_PCT,
         tp3_qty=qty * TP3_PCT,
         runner_qty=qty * RUNNER_PCT,
-        remaining_qty=qty
+        remaining_qty=qty,
     )
 
 
@@ -474,13 +671,16 @@ def manage_position(pos: Position, last_price: float, last_atr: float, equity: f
     if price_crossed(pos.side, last_price, active_stop, for_stop=True):
         pnl = calc_pnl(pos.side, pos.entry, active_stop, pos.remaining_qty)
         equity += pnl
-        push_event(state, {
-            "type": "EXIT",
-            "symbol": pos.symbol,
-            "reason": "TRAILING" if pos.trailing_active else "STOP",
-            "price": round(active_stop, 4),
-            "pnl": round(pnl, 2)
-        })
+        push_event(
+            state,
+            {
+                "type": "EXIT",
+                "symbol": pos.symbol,
+                "reason": "TRAILING" if pos.trailing_active else "STOP",
+                "price": round(active_stop, 4),
+                "pnl": round(pnl, 2),
+            },
+        )
         send_telegram(
             f"🔴 <b>SAÍDA {pos.symbol}</b>\n"
             f"Motivo: {'TRAILING' if pos.trailing_active else 'STOP'}\n"
@@ -544,6 +744,9 @@ def manage_position(pos: Position, last_price: float, last_atr: float, equity: f
     return pos, equity
 
 
+# =========================
+# OUTPUT
+# =========================
 def write_dashboard_json(state: dict, snapshots: dict):
     payload = {
         "updated_at_utc": pd.Timestamp.utcnow().isoformat(),
@@ -555,17 +758,25 @@ def write_dashboard_json(state: dict, snapshots: dict):
             "symbols": SYMBOLS,
             "timeframe": TIMEFRAME,
             "risk_pct": RISK_PCT,
+            "base_risk_pct": BASE_RISK_PCT,
+            "medium_risk_pct": MEDIUM_RISK_PCT,
+            "low_risk_pct": LOW_RISK_PCT,
+            "min_sentiment_score": MIN_SENTIMENT_SCORE,
             "tp1_pct": TP1_PCT,
             "tp2_pct": TP2_PCT,
             "tp3_pct": TP3_PCT,
             "runner_pct": RUNNER_PCT,
             "binance_market_type": BINANCE_MARKET_TYPE,
-        }
+            "coinglass_interval": COINGLASS_INTERVAL,
+        },
     }
     OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_JSON.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+# =========================
+# MAIN
+# =========================
 def main():
     state = load_state()
     equity = float(state.get("equity", INITIAL_EQUITY))
@@ -590,37 +801,45 @@ def main():
             elif signal and signal.get("side") in ("LONG", "SHORT"):
                 pos = build_position(signal, equity)
                 positions[symbol] = asdict(pos)
-                push_event(state, {
-                    "type": "ENTRY",
-                    "symbol": symbol,
-                    "side": pos.side,
-                    "entry": round(pos.entry, 4),
-                    "stop": round(pos.stop, 4),
-                    "tp1": round(pos.tp1, 4),
-                    "tp2": round(pos.tp2, 4),
-                    "tp3": round(pos.tp3, 4)
-                })
+                push_event(
+                    state,
+                    {
+                        "type": "ENTRY",
+                        "symbol": symbol,
+                        "side": pos.side,
+                        "entry": round(pos.entry, 4),
+                        "stop": round(pos.stop, 4),
+                        "tp1": round(pos.tp1, 4),
+                        "tp2": round(pos.tp2, 4),
+                        "tp3": round(pos.tp3, 4),
+                        "sentiment_score": signal.get("sentiment_score"),
+                        "risk_pct": signal.get("risk_pct", RISK_PCT),
+                    },
+                )
                 send_telegram(
                     f"🟢 <b>ENTRADA {pos.side}</b>\n"
-                    f"{symbol} | 15m\n"
+                    f"{symbol} | {TIMEFRAME}\n"
                     f"Entry: <code>{pos.entry:.2f}</code>\n"
                     f"Stop: <code>{pos.stop:.2f}</code>\n"
                     f"TP1: <code>{pos.tp1:.2f}</code>\n"
                     f"TP2: <code>{pos.tp2:.2f}</code>\n"
-                    f"TP3: <code>{pos.tp3:.2f}</code>"
+                    f"TP3: <code>{pos.tp3:.2f}</code>\n"
+                    f"Score sentimento: <code>{signal.get('sentiment_score')}</code>\n"
+                    f"Risco usado: <code>{signal.get('risk_pct', RISK_PCT)*100:.2f}%</code>\n"
+                    f"Breakdown: <code>{signal.get('sentiment_breakdown')}</code>"
                 )
 
             snapshots[symbol] = signal if signal is not None else {
                 "symbol": symbol,
                 "side": "ERROR",
-                "error": "signal_none"
+                "error": "signal_none",
             }
 
         except Exception as e:
             snapshots[symbol] = {
                 "symbol": symbol,
                 "side": "ERROR",
-                "error": str(e)[:300]
+                "error": str(e)[:300],
             }
 
     state["equity"] = equity
