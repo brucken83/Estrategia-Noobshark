@@ -1,94 +1,60 @@
-# BTC/ETH 15m Telegram Alert Bot
+# BTC/ETH GitHub Monitor + Telegram
 
-Bot de monitoramento para **BTCUSDT** e **ETHUSDT** no **15m**, com alertas no Telegram de:
+Projeto para rodar **no GitHub** com:
 
-- entrada LONG/SHORT
-- TP1 1:1
-- TP2 2R
-- TP3 3R
-- stop movido para a entrada após TP1
-- trailing stop no runner final
-- saída final por stop ou trailing
+- **GitHub Actions** a cada 15 minutos
+- **GitHub Pages** para o painel
+- **Telegram** para alertas de entrada/saída
+- estratégia 15m com:
+  - EMA 20 / EMA 200
+  - Keltner
+  - POC
+  - VWAP de vela de baleia
+  - LSR
+  - OI
+  - Fear & Greed
+  - CVD aproximado
 
-## Estratégia implementada
+## Estrutura
 
-### Contexto
-- EMA 20 e EMA 200
-- Estrutura simples
-- Keltner
-- POC da tendência
-- VWAP ancorada na última vela de baleia
+- `main.py` → coleta dados, gera sinais, simula execução, envia Telegram e grava JSON do painel
+- `.github/workflows/update-monitor.yml` → roda no GitHub Actions
+- `docs/index.html` → painel estático
+- `docs/data/latest.json` → dados consumidos pela página
+- `runtime_state.json` → estado persistido da simulação
 
-### Sentimento / fluxo
-- LSR
-- OI change %
-- Fear & Greed
-- CVD aproximado
+## Como subir
 
-### Regras operacionais
-1. risco por trade = **0,5% da banca**
-2. **TP1 = 1R**
-3. realiza **40%** no TP1
-4. move stop para a entrada ao bater TP1
-5. realiza **25%** no TP2
-6. realiza **25%** no TP3
-7. deixa **10%** no trailing
-8. **nunca fecha trade manualmente no código**
+1. Crie um repositório no GitHub
+2. Envie estes arquivos
+3. Vá em **Settings > Secrets and variables > Actions**
+4. Cadastre:
+   - `SYMBOLS` = `BTCUSDT,ETHUSDT`
+   - `TIMEFRAME` = `15m`
+   - `INITIAL_EQUITY` = `100000`
+   - `TELEGRAM_BOT_TOKEN`
+   - `TELEGRAM_CHAT_ID`
+   - `COINGLASS_API_KEY`
 
----
+## Como ativar a página
 
-## Aviso importante
-Este projeto é **paper trading / alertas**, não envia ordens para corretora.
+1. Vá em **Settings > Pages**
+2. Em **Build and deployment**, selecione **Deploy from a branch**
+3. Escolha a branch `main`
+4. Escolha a pasta `/docs`
 
----
+Depois a página ficará em algo como:
+`https://SEU_USUARIO.github.io/SEU_REPO/`
 
-## APIs usadas
-- Binance Futures REST para candles
-- CoinGlass API para LSR e OI (via chave em `.env`)
-- Alternative.me para Fear & Greed
+## Como ativar o workflow
 
----
-
-## Instalação
-
-```bash
-git clone <seu-repo>
-cd btc_eth_telegram_bot
-python -m venv .venv
-source .venv/bin/activate  # Linux/Mac
-# .venv\Scripts\activate   # Windows
-
-pip install -r requirements.txt
-cp .env.example .env
-```
-
-Preencha no `.env`:
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_CHAT_ID`
-- `COINGLASS_API_KEY`
-
-Depois rode:
-
-```bash
-python main.py
-```
-
----
-
-## Deploy simples no GitHub + Render/Railway
-
-1. Suba os arquivos para um repositório GitHub
-2. Crie um serviço em Render ou Railway
-3. Configure as variáveis do `.env` no painel
-4. Comando de start:
-```bash
-python main.py
-```
-
----
+1. Vá em **Actions**
+2. Habilite os workflows se necessário
+3. Rode manualmente `update-monitor`
+4. Depois ele seguirá no agendamento de 15 em 15 minutos
 
 ## Observações
-- O CVD aqui é uma **aproximação por candle/volume**
-- O POC é calculado com histograma de volume por faixa de preço
-- A VWAP da baleia usa a última vela com volume acima da média
-- Os nomes exatos de campos retornados pela CoinGlass podem variar por plano/endpoint; se necessário, ajuste as funções `fetch_lsr()` e `fetch_oi_change_pct()`
+- O painel é estático, então não é tick a tick; ele atualiza a cada execução do workflow.
+- O GitHub Pages é público. Não publique segredos nem dados sensíveis.
+- O CVD usado aqui é aproximado por candle/volume.
+- Alguns campos da CoinGlass podem variar por plano. Se necessário, ajuste `fetch_lsr()` e `fetch_oi_change_pct()`.

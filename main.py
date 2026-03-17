@@ -1,11 +1,9 @@
 import os
-import math
 import json
-import time
-import logging
+import math
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Dict, Optional, List, Tuple
+from typing import Optional, Dict, Tuple
 
 import numpy as np
 import pandas as pd
@@ -14,40 +12,36 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# =========================
-# CONFIG
-# =========================
 SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
 TIMEFRAME = os.getenv("TIMEFRAME", "15m")
-POLL_SECONDS = int(os.getenv("POLL_SECONDS", "60"))
-RISK_PCT = float(os.getenv("RISK_PCT", "0.005"))         # 0.5%
-TP1_PCT = float(os.getenv("TP1_PCT", "0.40"))            # 40%
-TP2_PCT = float(os.getenv("TP2_PCT", "0.25"))            # 25%
-TP3_PCT = float(os.getenv("TP3_PCT", "0.25"))            # 25%
-RUNNER_PCT = float(os.getenv("RUNNER_PCT", "0.10"))      # 10%
 INITIAL_EQUITY = float(os.getenv("INITIAL_EQUITY", "100000"))
+RISK_PCT = float(os.getenv("RISK_PCT", "0.005"))
+TP1_PCT = float(os.getenv("TP1_PCT", "0.40"))
+TP2_PCT = float(os.getenv("TP2_PCT", "0.25"))
+TP3_PCT = float(os.getenv("TP3_PCT", "0.25"))
+RUNNER_PCT = float(os.getenv("RUNNER_PCT", "0.10"))
+ATR_MULT = float(os.getenv("ATR_MULT", "1.0"))
 MAX_BARS = int(os.getenv("MAX_BARS", "500"))
-STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
+VWAP_WHALE_MULT = float(os.getenv("VWAP_WHALE_MULT", "2.0"))
+POC_BINS = int(os.getenv("POC_BINS", "40"))
+ENTRY_OFFSET_BPS = float(os.getenv("ENTRY_OFFSET_BPS", "0"))
+ENABLE_SENTIMENT = os.getenv("ENABLE_SENTIMENT", "true").lower() == "true"
+
+STATE_FILE = Path(os.getenv("STATE_FILE", "runtime_state.json"))
+OUTPUT_JSON = Path(os.getenv("OUTPUT_JSON", "docs/data/latest.json"))
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
 COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY", "")
 COINGLASS_BASE_URL = os.getenv("COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com/api")
 BINANCE_BASE_URL = os.getenv("BINANCE_BASE_URL", "https://fapi.binance.com")
-ATR_MULT = float(os.getenv("ATR_MULT", "1.0"))
-VWAP_WHALE_MULT = float(os.getenv("VWAP_WHALE_MULT", "2.0"))    # volume x avg volume => whale candle
-POC_BINS = int(os.getenv("POC_BINS", "40"))
-ENTRY_OFFSET_BPS = float(os.getenv("ENTRY_OFFSET_BPS", "0"))    # for paper trading
-ENABLE_SENTIMENT = os.getenv("ENABLE_SENTIMENT", "true").lower() == "true"
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
-# =========================
-# MODELS
-# =========================
 @dataclass
 class Position:
     symbol: str
-    side: str                   # LONG / SHORT
+    side: str
     entry: float
     stop: float
     qty: float
@@ -68,41 +62,24 @@ class Position:
     trailing_stop: Optional[float] = None
     status: str = "OPEN"
 
-@dataclass
-class SentimentSnapshot:
-    lsr: Optional[float] = None
-    oi_change_pct: Optional[float] = None
-    fng_value: Optional[int] = None
-    cvd_slope: Optional[float] = None
 
-# =========================
-# PERSISTENCE
-# =========================
 def load_state() -> dict:
     if STATE_FILE.exists():
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"equity": INITIAL_EQUITY, "positions": {}, "last_signal_ts": {}}
+    return {"equity": INITIAL_EQUITY, "positions": {}, "events": []}
+
 
 def save_state(state: dict):
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
-# =========================
-# TELEGRAM
-# =========================
+
 def send_telegram(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logging.warning("Telegram not configured. Message: %s", text)
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
-    try:
-        requests.post(url, json=payload, timeout=15)
-    except Exception as e:
-        logging.exception("Telegram error: %s", e)
+    requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=20)
 
-# =========================
-# MARKET DATA
-# =========================
+
 def fetch_ohlcv(symbol: str, interval: str = "15m", limit: int = 500) -> pd.DataFrame:
     url = f"{BINANCE_BASE_URL}/fapi/v1/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
@@ -114,18 +91,19 @@ def fetch_ohlcv(symbol: str, interval: str = "15m", limit: int = 500) -> pd.Data
         "quote_asset_volume", "n_trades", "taker_buy_base", "taker_buy_quote", "ignore"
     ]
     df = pd.DataFrame(raw, columns=cols)
-    for c in ["open", "high", "low", "close", "volume", "quote_asset_volume", "taker_buy_base", "taker_buy_quote"]:
+    for c in ["open", "high", "low", "close", "volume"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
     return df
 
+
 def coinglass_get(path: str, params: Optional[dict] = None) -> dict:
     headers = {"CG-API-KEY": COINGLASS_API_KEY} if COINGLASS_API_KEY else {}
-    url = f"{COINGLASS_BASE_URL}{path}"
-    r = requests.get(url, headers=headers, params=params or {}, timeout=20)
+    r = requests.get(f"{COINGLASS_BASE_URL}{path}", headers=headers, params=params or {}, timeout=20)
     r.raise_for_status()
     return r.json()
+
 
 def fetch_fng() -> Optional[int]:
     try:
@@ -136,16 +114,13 @@ def fetch_fng() -> Optional[int]:
     except Exception:
         return None
 
+
 def fetch_lsr(symbol: str) -> Optional[float]:
-    # CoinGlass global long/short account ratio history endpoint
-    # Expected symbol example: BTCUSDT / ETHUSDT depending on API plan and exchange filters.
     if not COINGLASS_API_KEY:
         return None
     try:
-        data = coinglass_get("/futures/global-long-short-account-ratio/history", params={
-            "symbol": symbol,
-            "interval": "15m",
-            "limit": 3
+        data = coinglass_get("/futures/global-long-short-account-ratio/history", {
+            "symbol": symbol, "interval": "15m", "limit": 3
         })
         rows = data.get("data") or data.get("result") or []
         if isinstance(rows, dict):
@@ -153,47 +128,44 @@ def fetch_lsr(symbol: str) -> Optional[float]:
         if not rows:
             return None
         last = rows[-1]
-        # Common fields on vendor APIs vary; try multiple keys
-        for key in ("longShortRatio", "long_short_ratio", "ratio", "value"):
-            if key in last:
-                return float(last[key])
-        return None
+        for k in ("longShortRatio", "long_short_ratio", "ratio", "value"):
+            if k in last:
+                return float(last[k])
     except Exception:
         return None
+    return None
+
 
 def fetch_oi_change_pct(symbol: str) -> Optional[float]:
-    # CoinGlass aggregated OI history, last 2 bars
     if not COINGLASS_API_KEY:
         return None
     try:
-        data = coinglass_get("/futures/open-interest/aggregated-history", params={
-            "symbol": symbol,
-            "interval": "15m",
-            "limit": 3
+        data = coinglass_get("/futures/open-interest/aggregated-history", {
+            "symbol": symbol, "interval": "15m", "limit": 3
         })
         rows = data.get("data") or data.get("result") or []
         if isinstance(rows, dict):
             rows = rows.get("list", [])
         if len(rows) < 2:
             return None
-        prev, last = rows[-2], rows[-1]
-        def _extract_close(x):
-            for key in ("close", "c", "oiClose", "value"):
-                if key in x:
-                    return float(x[key])
+
+        def extract(x):
+            for k in ("close", "c", "oiClose", "value"):
+                if k in x:
+                    return float(x[k])
             return None
-        a, b = _extract_close(prev), _extract_close(last)
+
+        a, b = extract(rows[-2]), extract(rows[-1])
         if a is None or b is None or a == 0:
             return None
         return (b - a) / a * 100
     except Exception:
         return None
 
-# =========================
-# INDICATORS
-# =========================
+
 def ema(series: pd.Series, span: int) -> pd.Series:
     return series.ewm(span=span, adjust=False).mean()
+
 
 def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
     h_l = df["high"] - df["low"]
@@ -202,12 +174,14 @@ def atr(df: pd.DataFrame, n: int = 14) -> pd.Series:
     tr = pd.concat([h_l, h_pc, l_pc], axis=1).max(axis=1)
     return tr.rolling(n).mean()
 
+
 def rsi(series: pd.Series, n: int = 14) -> pd.Series:
     delta = series.diff()
     up = delta.clip(lower=0).rolling(n).mean()
     down = (-delta.clip(upper=0)).rolling(n).mean()
     rs = up / down.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
+
 
 def keltner(df: pd.DataFrame, ema_n: int = 20, atr_n: int = 20, mult: float = 1.5):
     mid = ema(df["close"], ema_n)
@@ -216,15 +190,17 @@ def keltner(df: pd.DataFrame, ema_n: int = 20, atr_n: int = 20, mult: float = 1.
     lower = mid - mult * rng
     return mid, upper, lower
 
+
 def approximate_cvd(df: pd.DataFrame) -> pd.Series:
-    # Approximation using candle direction * volume.
     signed = np.where(df["close"] >= df["open"], df["volume"], -df["volume"])
     return pd.Series(signed, index=df.index).cumsum()
+
 
 def cvd_slope(cvd: pd.Series, lookback: int = 5) -> float:
     if len(cvd) < lookback + 1:
         return 0.0
     return float(cvd.iloc[-1] - cvd.iloc[-1 - lookback])
+
 
 def detect_structure(df: pd.DataFrame, lookback: int = 20) -> str:
     recent = df.tail(lookback).copy()
@@ -240,6 +216,7 @@ def detect_structure(df: pd.DataFrame, lookback: int = 20) -> str:
         return "BEARISH"
     return "NEUTRAL"
 
+
 def whale_vwap(df: pd.DataFrame, volume_mult: float = 2.0, lookback: int = 120) -> Optional[float]:
     recent = df.tail(lookback).copy()
     avg_vol = recent["volume"].rolling(20).mean()
@@ -249,57 +226,42 @@ def whale_vwap(df: pd.DataFrame, volume_mult: float = 2.0, lookback: int = 120) 
         return None
     idx = whale_idx[-1]
     chunk = recent.loc[idx:]
-    typical_price = (chunk["high"] + chunk["low"] + chunk["close"]) / 3
-    vwap = (typical_price * chunk["volume"]).sum() / chunk["volume"].sum()
-    return float(vwap)
+    tp = (chunk["high"] + chunk["low"] + chunk["close"]) / 3
+    return float((tp * chunk["volume"]).sum() / chunk["volume"].sum())
+
 
 def trend_poc(df: pd.DataFrame, bins: int = 40, lookback: int = 120) -> Optional[float]:
     recent = df.tail(lookback).copy()
     if recent.empty:
         return None
-    prices = recent["close"].values
-    vols = recent["volume"].values
-    hist, edges = np.histogram(prices, bins=bins, weights=vols)
+    hist, edges = np.histogram(recent["close"].values, bins=bins, weights=recent["volume"].values)
     idx = int(np.argmax(hist))
-    poc = (edges[idx] + edges[idx + 1]) / 2
-    return float(poc)
+    return float((edges[idx] + edges[idx + 1]) / 2)
 
-# =========================
-# STRATEGY
-# =========================
-def sentiment_snapshot(df: pd.DataFrame, symbol: str) -> SentimentSnapshot:
-    cvd = approximate_cvd(df)
-    snap = SentimentSnapshot(
-        lsr=fetch_lsr(symbol) if ENABLE_SENTIMENT else None,
-        oi_change_pct=fetch_oi_change_pct(symbol) if ENABLE_SENTIMENT else None,
-        fng_value=fetch_fng() if ENABLE_SENTIMENT else None,
-        cvd_slope=cvd_slope(cvd, lookback=5),
-    )
-    return snap
 
-def side_filters(side: str, snap: SentimentSnapshot) -> bool:
-    ok = True
+def side_filters(side: str, lsr, oi_change_pct, fng, cvd_slope_val) -> bool:
     if side == "LONG":
-        if snap.lsr is not None and snap.lsr > 1.8:
-            ok = False
-        if snap.oi_change_pct is not None and snap.oi_change_pct < -1.0:
-            ok = False
-        if snap.fng_value is not None and snap.fng_value > 80:
-            ok = False
-        if snap.cvd_slope is not None and snap.cvd_slope < 0:
-            ok = False
+        if lsr is not None and lsr > 1.8:
+            return False
+        if oi_change_pct is not None and oi_change_pct < -1.0:
+            return False
+        if fng is not None and fng > 80:
+            return False
+        if cvd_slope_val < 0:
+            return False
     else:
-        if snap.lsr is not None and snap.lsr < 0.7:
-            ok = False
-        if snap.oi_change_pct is not None and snap.oi_change_pct < -1.0:
-            ok = False
-        if snap.fng_value is not None and snap.fng_value < 20:
-            ok = False
-        if snap.cvd_slope is not None and snap.cvd_slope > 0:
-            ok = False
-    return ok
+        if lsr is not None and lsr < 0.7:
+            return False
+        if oi_change_pct is not None and oi_change_pct < -1.0:
+            return False
+        if fng is not None and fng < 20:
+            return False
+        if cvd_slope_val > 0:
+            return False
+    return True
 
-def generate_signal(df: pd.DataFrame, symbol: str) -> Tuple[Optional[dict], SentimentSnapshot]:
+
+def generate_signal(df: pd.DataFrame, symbol: str):
     df = df.copy()
     df["ema20"] = ema(df["close"], 20)
     df["ema200"] = ema(df["close"], 200)
@@ -313,96 +275,118 @@ def generate_signal(df: pd.DataFrame, symbol: str) -> Tuple[Optional[dict], Sent
     poc = trend_poc(df, bins=POC_BINS, lookback=120)
     wvwap = whale_vwap(df, volume_mult=VWAP_WHALE_MULT, lookback=120)
     structure = detect_structure(df, lookback=20)
-    snap = sentiment_snapshot(df, symbol)
+
+    lsr = fetch_lsr(symbol) if ENABLE_SENTIMENT else None
+    oi_change_pct = fetch_oi_change_pct(symbol) if ENABLE_SENTIMENT else None
+    fng = fetch_fng() if ENABLE_SENTIMENT else None
+    cvd = approximate_cvd(df)
+    cvd_slope_val = cvd_slope(cvd, 5)
 
     row = df.iloc[-1]
     prev = df.iloc[-2]
-
     price = float(row["close"])
-    ema20_now = float(row["ema20"])
-    ema20_prev = float(prev["ema20"])
-    ema200_now = float(row["ema200"])
     atr_now = float(row["atr14"]) if not np.isnan(row["atr14"]) else None
     if atr_now is None or atr_now == 0:
-        return None, snap
+        return None
 
     long_context = (
-        price > ema200_now and
-        ema20_now > ema20_prev and
+        price > float(row["ema200"]) and
+        float(row["ema20"]) > float(prev["ema20"]) and
         structure == "BULLISH" and
-        (poc is None or price >= poc * 0.997)
+        (poc is None or price >= poc * 0.997) and
+        side_filters("LONG", lsr, oi_change_pct, fng, cvd_slope_val)
     )
 
     short_context = (
-        price < ema200_now and
-        ema20_now < ema20_prev and
+        price < float(row["ema200"]) and
+        float(row["ema20"]) < float(prev["ema20"]) and
         structure == "BEARISH" and
-        (poc is None or price <= poc * 1.003)
+        (poc is None or price <= poc * 1.003) and
+        side_filters("SHORT", lsr, oi_change_pct, fng, cvd_slope_val)
     )
 
-    near_level_long = any([
-        abs(price - ema20_now) <= 0.35 * atr_now,
+    near_level = any([
+        abs(price - float(row["ema20"])) <= 0.35 * atr_now,
         abs(price - float(row["keltner_mid"])) <= 0.35 * atr_now,
         poc is not None and abs(price - poc) <= 0.35 * atr_now,
         wvwap is not None and abs(price - wvwap) <= 0.35 * atr_now,
     ])
 
-    near_level_short = near_level_long
-
     bullish_candle = row["close"] > row["open"] and row["close"] > prev["high"]
     bearish_candle = row["close"] < row["open"] and row["close"] < prev["low"]
 
-    if long_context and near_level_long and bullish_candle and side_filters("LONG", snap):
+    if long_context and near_level and bullish_candle:
         entry = price * (1 + ENTRY_OFFSET_BPS / 10000)
-        stop_candidates = [
+        stops = [
             float(df["low"].tail(5).min()),
-            ema20_now - 0.5 * atr_now,
+            float(row["ema20"]) - 0.5 * atr_now,
             (poc - 0.4 * atr_now) if poc is not None else None,
             (wvwap - 0.4 * atr_now) if wvwap is not None else None,
         ]
-        stop_candidates = [x for x in stop_candidates if x is not None and x < entry]
-        if not stop_candidates:
-            return None, snap
-        stop = max(stop_candidates)
-        return {
-            "symbol": symbol,
-            "side": "LONG",
-            "entry": float(entry),
-            "stop": float(stop),
-            "atr": atr_now,
-            "poc": poc,
-            "wvwap": wvwap,
-            "context": {"structure": structure, "price": price}
-        }, snap
+        stops = [s for s in stops if s is not None and s < entry]
+        if stops:
+            stop = max(stops)
+            return {
+                "symbol": symbol,
+                "side": "LONG",
+                "entry": float(entry),
+                "stop": float(stop),
+                "atr": atr_now,
+                "price": price,
+                "poc": poc,
+                "wvwap": wvwap,
+                "structure": structure,
+                "rsi14": float(row["rsi14"]) if not np.isnan(row["rsi14"]) else None,
+                "lsr": lsr,
+                "oi_change_pct": oi_change_pct,
+                "fng": fng,
+                "cvd_slope": cvd_slope_val
+            }
 
-    if short_context and near_level_short and bearish_candle and side_filters("SHORT", snap):
+    if short_context and near_level and bearish_candle:
         entry = price * (1 - ENTRY_OFFSET_BPS / 10000)
-        stop_candidates = [
+        stops = [
             float(df["high"].tail(5).max()),
-            ema20_now + 0.5 * atr_now,
+            float(row["ema20"]) + 0.5 * atr_now,
             (poc + 0.4 * atr_now) if poc is not None else None,
             (wvwap + 0.4 * atr_now) if wvwap is not None else None,
         ]
-        stop_candidates = [x for x in stop_candidates if x is not None and x > entry]
-        if not stop_candidates:
-            return None, snap
-        stop = min(stop_candidates)
-        return {
-            "symbol": symbol,
-            "side": "SHORT",
-            "entry": float(entry),
-            "stop": float(stop),
-            "atr": atr_now,
-            "poc": poc,
-            "wvwap": wvwap,
-            "context": {"structure": structure, "price": price}
-        }, snap
+        stops = [s for s in stops if s is not None and s > entry]
+        if stops:
+            stop = min(stops)
+            return {
+                "symbol": symbol,
+                "side": "SHORT",
+                "entry": float(entry),
+                "stop": float(stop),
+                "atr": atr_now,
+                "price": price,
+                "poc": poc,
+                "wvwap": wvwap,
+                "structure": structure,
+                "rsi14": float(row["rsi14"]) if not np.isnan(row["rsi14"]) else None,
+                "lsr": lsr,
+                "oi_change_pct": oi_change_pct,
+                "fng": fng,
+                "cvd_slope": cvd_slope_val
+            }
 
-    return None, snap
+    return {
+        "symbol": symbol,
+        "side": "WAIT",
+        "price": price,
+        "atr": atr_now,
+        "poc": poc,
+        "wvwap": wvwap,
+        "structure": structure,
+        "rsi14": float(row["rsi14"]) if not np.isnan(row["rsi14"]) else None,
+        "lsr": lsr,
+        "oi_change_pct": oi_change_pct,
+        "fng": fng,
+        "cvd_slope": cvd_slope_val
+    }
 
-# =========================
-# EXECUTION ENGINE (PAPER)
-# =========================
+
 def build_position(signal: dict, equity: float) -> Position:
     entry = signal["entry"]
     stop = signal["stop"]
@@ -420,11 +404,6 @@ def build_position(signal: dict, equity: float) -> Position:
         tp2 = entry - 2 * R
         tp3 = entry - 3 * R
 
-    tp1_qty = qty * TP1_PCT
-    tp2_qty = qty * TP2_PCT
-    tp3_qty = qty * TP3_PCT
-    runner_qty = qty * RUNNER_PCT
-
     return Position(
         symbol=signal["symbol"],
         side=side,
@@ -436,178 +415,155 @@ def build_position(signal: dict, equity: float) -> Position:
         tp1=tp1,
         tp2=tp2,
         tp3=tp3,
-        tp1_qty=tp1_qty,
-        tp2_qty=tp2_qty,
-        tp3_qty=tp3_qty,
-        runner_qty=runner_qty,
-        remaining_qty=qty,
+        tp1_qty=qty * TP1_PCT,
+        tp2_qty=qty * TP2_PCT,
+        tp3_qty=qty * TP3_PCT,
+        runner_qty=qty * RUNNER_PCT,
+        remaining_qty=qty
     )
 
-def fmt_sentiment(s: SentimentSnapshot) -> str:
-    return (
-        f"LSR={s.lsr if s.lsr is not None else 'NA'} | "
-        f"OIΔ={round(s.oi_change_pct,2) if s.oi_change_pct is not None else 'NA'}% | "
-        f"F&G={s.fng_value if s.fng_value is not None else 'NA'} | "
-        f"CVDslope={round(s.cvd_slope,2) if s.cvd_slope is not None else 'NA'}"
-    )
 
-def open_position_alert(pos: Position, snap: SentimentSnapshot):
-    send_telegram(
-        f"🟢 <b>ENTRADA {pos.side}</b>\n"
-        f"<b>{pos.symbol}</b> | 15m\n"
-        f"Entry: <code>{pos.entry:.2f}</code>\n"
-        f"Stop: <code>{pos.stop:.2f}</code>\n"
-        f"R: <code>{pos.R:.2f}</code>\n"
-        f"Qty: <code>{pos.qty:.6f}</code>\n"
-        f"TP1 (40%): <code>{pos.tp1:.2f}</code>\n"
-        f"TP2 (25%): <code>{pos.tp2:.2f}</code>\n"
-        f"TP3 (25%): <code>{pos.tp3:.2f}</code>\n"
-        f"Runner (10%): trailing após TP3\n"
-        f"Sentimento: {fmt_sentiment(snap)}"
-    )
+def calc_pnl(side: str, entry: float, exit_price: float, qty: float) -> float:
+    return (exit_price - entry) * qty if side == "LONG" else (entry - exit_price) * qty
 
-def partial_alert(symbol: str, label: str, px: float, qty: float, remaining: float, stop: Optional[float] = None):
-    extra = f"\nNovo stop: <code>{stop:.2f}</code>" if stop is not None else ""
-    send_telegram(
-        f"📌 <b>{label}</b>\n"
-        f"<b>{symbol}</b>\n"
-        f"Preço: <code>{px:.2f}</code>\n"
-        f"Qty executada: <code>{qty:.6f}</code>\n"
-        f"Restante: <code>{remaining:.6f}</code>{extra}"
-    )
-
-def close_alert(symbol: str, reason: str, px: float, pnl: float, equity: float):
-    emoji = "✅" if pnl >= 0 else "🔴"
-    send_telegram(
-        f"{emoji} <b>SAÍDA {reason}</b>\n"
-        f"<b>{symbol}</b>\n"
-        f"Preço: <code>{px:.2f}</code>\n"
-        f"PnL estimado: <code>{pnl:.2f}</code>\n"
-        f"Equity: <code>{equity:.2f}</code>"
-    )
 
 def price_crossed(side: str, current_price: float, target: float, for_stop: bool = False) -> bool:
     if side == "LONG":
         return current_price <= target if for_stop else current_price >= target
     return current_price >= target if for_stop else current_price <= target
 
-def calc_pnl(side: str, entry: float, exit_price: float, qty: float) -> float:
-    if side == "LONG":
-        return (exit_price - entry) * qty
-    return (entry - exit_price) * qty
 
-def manage_position(pos: Position, last_price: float, last_atr: float, equity: float) -> Tuple[Position, float]:
-    # Rule 8: never manual close. Only stop, TP, trailing.
-    realized_pnl = 0.0
+def push_event(state: dict, event: dict):
+    events = state.get("events", [])
+    events.append(event)
+    state["events"] = events[-100:]
 
-    # Hard stop
+
+def manage_position(pos: Position, last_price: float, last_atr: float, equity: float, state: dict):
     active_stop = pos.trailing_stop if pos.trailing_active and pos.trailing_stop is not None else pos.stop
+
     if price_crossed(pos.side, last_price, active_stop, for_stop=True):
         pnl = calc_pnl(pos.side, pos.entry, active_stop, pos.remaining_qty)
-        realized_pnl += pnl
         equity += pnl
-        pos.remaining_qty = 0.0
+        push_event(state, {
+            "type": "EXIT",
+            "symbol": pos.symbol,
+            "reason": "TRAILING" if pos.trailing_active else "STOP",
+            "price": round(active_stop, 4),
+            "pnl": round(pnl, 2)
+        })
+        send_telegram(f"🔴 <b>SAÍDA {pos.symbol}</b>\nMotivo: {'TRAILING' if pos.trailing_active else 'STOP'}\nPreço: <code>{active_stop:.2f}</code>\nPnL: <code>{pnl:.2f}</code>")
+        pos.remaining_qty = 0
         pos.status = "CLOSED"
-        close_alert(pos.symbol, "STOP" if not pos.trailing_active else "TRAILING", active_stop, pnl, equity)
         return pos, equity
 
-    # TP1
     if (not pos.tp1_done) and price_crossed(pos.side, last_price, pos.tp1):
         pnl = calc_pnl(pos.side, pos.entry, pos.tp1, pos.tp1_qty)
-        realized_pnl += pnl
         equity += pnl
         pos.remaining_qty -= pos.tp1_qty
         pos.tp1_done = True
-        pos.stop = pos.entry  # move stop to entry
-        partial_alert(pos.symbol, "TP1 1:1", pos.tp1, pos.tp1_qty, pos.remaining_qty, stop=pos.stop)
+        pos.stop = pos.entry
+        push_event(state, {"type": "TP1", "symbol": pos.symbol, "price": round(pos.tp1, 4), "pnl": round(pnl, 2)})
+        send_telegram(f"📌 <b>TP1 {pos.symbol}</b>\nPreço: <code>{pos.tp1:.2f}</code>\nParcial: <code>{pos.tp1_qty:.6f}</code>\nStop movido para entrada.")
 
-    # TP2
     if pos.tp1_done and (not pos.tp2_done) and price_crossed(pos.side, last_price, pos.tp2):
         pnl = calc_pnl(pos.side, pos.entry, pos.tp2, pos.tp2_qty)
-        realized_pnl += pnl
         equity += pnl
         pos.remaining_qty -= pos.tp2_qty
         pos.tp2_done = True
-        partial_alert(pos.symbol, "TP2 2R", pos.tp2, pos.tp2_qty, pos.remaining_qty)
+        push_event(state, {"type": "TP2", "symbol": pos.symbol, "price": round(pos.tp2, 4), "pnl": round(pnl, 2)})
+        send_telegram(f"📌 <b>TP2 {pos.symbol}</b>\nPreço: <code>{pos.tp2:.2f}</code>\nParcial: <code>{pos.tp2_qty:.6f}</code>")
 
-    # TP3
     if pos.tp2_done and (not pos.tp3_done) and price_crossed(pos.side, last_price, pos.tp3):
         pnl = calc_pnl(pos.side, pos.entry, pos.tp3, pos.tp3_qty)
-        realized_pnl += pnl
         equity += pnl
         pos.remaining_qty -= pos.tp3_qty
         pos.tp3_done = True
         pos.trailing_active = True
-        if pos.side == "LONG":
-            pos.trailing_stop = max(pos.entry, last_price - ATR_MULT * last_atr)
-        else:
-            pos.trailing_stop = min(pos.entry, last_price + ATR_MULT * last_atr)
-        partial_alert(pos.symbol, "TP3 3R", pos.tp3, pos.tp3_qty, pos.remaining_qty, stop=pos.trailing_stop)
+        pos.trailing_stop = max(pos.entry, last_price - ATR_MULT * last_atr) if pos.side == "LONG" else min(pos.entry, last_price + ATR_MULT * last_atr)
+        push_event(state, {"type": "TP3", "symbol": pos.symbol, "price": round(pos.tp3, 4), "pnl": round(pnl, 2)})
+        send_telegram(f"📌 <b>TP3 {pos.symbol}</b>\nPreço: <code>{pos.tp3:.2f}</code>\nTrailing ativado em <code>{pos.trailing_stop:.2f}</code>")
 
-    # Update trailing for runner
     if pos.trailing_active and pos.remaining_qty > 0:
         if pos.side == "LONG":
-            new_trail = max(pos.trailing_stop or pos.entry, last_price - ATR_MULT * last_atr, pos.entry)
-            pos.trailing_stop = new_trail
+            pos.trailing_stop = max(pos.trailing_stop or pos.entry, last_price - ATR_MULT * last_atr, pos.entry)
         else:
-            new_trail = min(pos.trailing_stop or pos.entry, last_price + ATR_MULT * last_atr, pos.entry)
-            pos.trailing_stop = new_trail
+            pos.trailing_stop = min(pos.trailing_stop or pos.entry, last_price + ATR_MULT * last_atr, pos.entry)
 
-    # If runner stop gets hit next loop, trade closes.
     return pos, equity
 
-# =========================
-# MAIN LOOP
-# =========================
+
+def write_dashboard_json(state: dict, snapshots: dict):
+    payload = {
+        "updated_at_utc": pd.Timestamp.utcnow().isoformat(),
+        "equity": round(float(state.get("equity", INITIAL_EQUITY)), 2),
+        "positions": state.get("positions", {}),
+        "events": state.get("events", [])[-25:],
+        "snapshots": snapshots,
+        "config": {
+            "symbols": SYMBOLS,
+            "timeframe": TIMEFRAME,
+            "risk_pct": RISK_PCT,
+            "tp1_pct": TP1_PCT,
+            "tp2_pct": TP2_PCT,
+            "tp3_pct": TP3_PCT,
+            "runner_pct": RUNNER_PCT
+        }
+    }
+    OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_JSON.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def main():
     state = load_state()
-    send_telegram("🤖 Bot iniciado. Monitorando BTC/ETH 15m com entradas, parciais, breakeven e trailing.")
+    equity = float(state.get("equity", INITIAL_EQUITY))
+    positions = state.get("positions", {})
+    snapshots = {}
 
-    while True:
-        try:
-            equity = float(state.get("equity", INITIAL_EQUITY))
-            positions: Dict[str, dict] = state.get("positions", {})
+    for symbol in SYMBOLS:
+        df = fetch_ohlcv(symbol, TIMEFRAME, MAX_BARS)
+        signal = generate_signal(df, symbol)
+        last_price = float(df.iloc[-1]["close"])
+        last_atr = float(atr(df, 14).iloc[-1])
 
-            for symbol in SYMBOLS:
-                df = fetch_ohlcv(symbol, TIMEFRAME, MAX_BARS)
-                if len(df) < 220:
-                    continue
-
-                last_price = float(df.iloc[-1]["close"])
-                last_atr = float(atr(df, 14).iloc[-1])
-
-                # Manage open position first
-                if symbol in positions and positions[symbol].get("status") == "OPEN":
-                    pos = Position(**positions[symbol])
-                    pos, equity = manage_position(pos, last_price, last_atr, equity)
-                    positions[symbol] = asdict(pos)
-                    if pos.status == "CLOSED":
-                        del positions[symbol]
-                    state["equity"] = equity
-                    state["positions"] = positions
-                    save_state(state)
-                    continue
-
-                # No open position => look for new signal
-                signal, snap = generate_signal(df, symbol)
-                if signal is None:
-                    continue
-
-                pos = build_position(signal, equity)
+        if symbol in positions and positions[symbol].get("status") == "OPEN":
+            pos = Position(**positions[symbol])
+            pos, equity = manage_position(pos, last_price, last_atr, equity, state)
+            if pos.status == "CLOSED":
+                positions.pop(symbol, None)
+            else:
                 positions[symbol] = asdict(pos)
-                state["positions"] = positions
-                save_state(state)
-                open_position_alert(pos, snap)
 
-            time.sleep(POLL_SECONDS)
+        elif signal and signal.get("side") in ("LONG", "SHORT"):
+            pos = build_position(signal, equity)
+            positions[symbol] = asdict(pos)
+            push_event(state, {
+                "type": "ENTRY",
+                "symbol": symbol,
+                "side": pos.side,
+                "entry": round(pos.entry, 4),
+                "stop": round(pos.stop, 4),
+                "tp1": round(pos.tp1, 4),
+                "tp2": round(pos.tp2, 4),
+                "tp3": round(pos.tp3, 4)
+            })
+            send_telegram(
+                f"🟢 <b>ENTRADA {pos.side}</b>\n"
+                f"{symbol} | 15m\n"
+                f"Entry: <code>{pos.entry:.2f}</code>\n"
+                f"Stop: <code>{pos.stop:.2f}</code>\n"
+                f"TP1: <code>{pos.tp1:.2f}</code>\n"
+                f"TP2: <code>{pos.tp2:.2f}</code>\n"
+                f"TP3: <code>{pos.tp3:.2f}</code>"
+            )
 
-        except KeyboardInterrupt:
-            logging.info("Bot finalizado manualmente.")
-            break
-        except Exception as e:
-            logging.exception("Loop error: %s", e)
-            send_telegram(f"⚠️ Erro no loop: <code>{str(e)[:350]}</code>")
-            time.sleep(15)
+        snapshots[symbol] = signal
+
+    state["equity"] = equity
+    state["positions"] = positions
+    save_state(state)
+    write_dashboard_json(state, snapshots)
+
 
 if __name__ == "__main__":
     main()

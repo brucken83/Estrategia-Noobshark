@@ -1,0 +1,19 @@
+{
+  "updated_at_utc": null,
+  "equity": 100000,
+  "positions": {},
+  "events": [],
+  "snapshots": {},
+  "config": {
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "timeframe": "15m",
+    "risk_pct": 0.005,
+    "tp1_pct": 0.4,
+    "tp2_pct": 0.25,
+    "tp3_pct": 0.25,
+    "runner_pct": 0.1
+  }
+}

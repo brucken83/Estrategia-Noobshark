@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BTC/ETH Monitor</title>
+  <style>
+    :root{
+      --bg:#0b1020; --card:#121a30; --muted:#9fb0d0; --text:#eef4ff;
+      --green:#20c997; --red:#ff6b6b; --yellow:#ffd166; --blue:#6ea8fe;
+      --border:#223055;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--text)}
+    .wrap{max-width:1200px;margin:0 auto;padding:24px}
+    h1{margin:0 0 8px;font-size:28px}
+    p.sub{margin:0 0 24px;color:var(--muted)}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:18px;box-shadow:0 8px 24px rgba(0,0,0,.2)}
+    .kpi{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+    .big{font-size:28px;font-weight:700;margin-top:8px}
+    .row{display:flex;justify-content:space-between;gap:16px;margin:8px 0}
+    .badge{display:inline-block;padding:6px 10px;border-radius:999px;font-size:12px;font-weight:700}
+    .long{background:rgba(32,201,151,.15);color:var(--green)}
+    .short{background:rgba(255,107,107,.15);color:var(--red)}
+    .wait{background:rgba(255,209,102,.15);color:var(--yellow)}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px 8px;border-bottom:1px solid var(--border);text-align:left;font-size:14px}
+    th{color:var(--muted);font-weight:600}
+    code{color:#b9d4ff}
+    .muted{color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>BTC/ETH 15m Monitor</h1>
+    <p class="sub">Painel estático para GitHub Pages. Atualize com GitHub Actions.</p>
+
+    <div class="grid" id="top-grid"></div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>Ativos monitorados</h3>
+      <div id="snapshots"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>Posições abertas</h3>
+      <div id="positions"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>Eventos recentes</h3>
+      <div id="events"></div>
+    </div>
+  </div>
+
+<script>
+async function loadData(){
+  const res = await fetch('./data/latest.json?ts=' + Date.now());
+  const data = await res.json();
+
+  const top = document.getElementById('top-grid');
+  const snapshots = data.snapshots || {};
+  const positions = data.positions || {};
+  const events = data.events || [];
+
+  const openCount = Object.keys(positions).length;
+  const entryCount = events.filter(e => e.type === 'ENTRY').length;
+
+  top.innerHTML = `
+    <div class="card"><div class="kpi">Atualizado em UTC</div><div class="big">${data.updated_at_utc || '-'}</div></div>
+    <div class="card"><div class="kpi">Equity simulada</div><div class="big">$ ${Number(data.equity || 0).toLocaleString()}</div></div>
+    <div class="card"><div class="kpi">Posições abertas</div><div class="big">${openCount}</div></div>
+    <div class="card"><div class="kpi">Eventos no histórico</div><div class="big">${events.length}</div></div>
+  `;
+
+  const snapshotRows = Object.values(snapshots).map(s => {
+    const badgeClass = (s?.side || 'WAIT').toLowerCase() === 'long' ? 'long' : ((s?.side || 'WAIT').toLowerCase() === 'short' ? 'short' : 'wait');
+    return `
+      <tr>
+        <td><strong>${s?.symbol || '-'}</strong></td>
+        <td><span class="badge ${badgeClass}">${s?.side || 'WAIT'}</span></td>
+        <td>${fmt(s?.price)}</td>
+        <td>${s?.structure || '-'}</td>
+        <td>${fmt(s?.poc)}</td>
+        <td>${fmt(s?.wvwap)}</td>
+        <td>${fmt(s?.rsi14)}</td>
+        <td>${fmt(s?.lsr)}</td>
+        <td>${fmt(s?.oi_change_pct)}%</td>
+        <td>${s?.fng ?? '-'}</td>
+        <td>${fmt(s?.cvd_slope)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  document.getElementById('snapshots').innerHTML = `
+    <table>
+      <thead><tr><th>Ativo</th><th>Sinal</th><th>Preço</th><th>Estrutura</th><th>POC</th><th>VWAP Baleia</th><th>RSI</th><th>LSR</th><th>OI Δ</th><th>F&G</th><th>CVD slope</th></tr></thead>
+      <tbody>${snapshotRows || '<tr><td colspan="11" class="muted">Sem dados</td></tr>'}</tbody>
+    </table>
+  `;
+
+  const posRows = Object.values(positions).map(p => `
+    <tr>
+      <td><strong>${p.symbol}</strong></td>
+      <td><span class="badge ${(p.side || '').toLowerCase() === 'long' ? 'long' : 'short'}">${p.side}</span></td>
+      <td>${fmt(p.entry)}</td>
+      <td>${fmt(p.stop)}</td>
+      <td>${fmt(p.tp1)}</td>
+      <td>${fmt(p.tp2)}</td>
+      <td>${fmt(p.tp3)}</td>
+      <td>${fmt(p.trailing_stop)}</td>
+      <td>${fmt(p.remaining_qty)}</td>
+      <td>${p.status || '-'}</td>
+    </tr>
+  `).join('');
+
+  document.getElementById('positions').innerHTML = `
+    <table>
+      <thead><tr><th>Ativo</th><th>Lado</th><th>Entrada</th><th>Stop</th><th>TP1</th><th>TP2</th><th>TP3</th><th>Trailing</th><th>Qtd restante</th><th>Status</th></tr></thead>
+      <tbody>${posRows || '<tr><td colspan="10" class="muted">Sem posições abertas</td></tr>'}</tbody>
+    </table>
+  `;
+
+  const eventRows = events.slice().reverse().map(e => `
+    <tr>
+      <td>${e.type || '-'}</td>
+      <td>${e.symbol || '-'}</td>
+      <td>${e.side || e.reason || '-'}</td>
+      <td>${e.entry ? fmt(e.entry) : '-'}</td>
+      <td>${e.stop ? fmt(e.stop) : '-'}</td>
+      <td>${e.price ? fmt(e.price) : '-'}</td>
+      <td>${e.pnl ?? '-'}</td>
+    </tr>
+  `).join('');
+
+  document.getElementById('events').innerHTML = `
+    <table>
+      <thead><tr><th>Evento</th><th>Ativo</th><th>Detalhe</th><th>Entrada</th><th>Stop</th><th>Preço</th><th>PnL</th></tr></thead>
+      <tbody>${eventRows || '<tr><td colspan="7" class="muted">Sem eventos</td></tr>'}</tbody>
+    </table>
+  `;
+}
+
+function fmt(v){
+  if(v === null || v === undefined || Number.isNaN(v)) return '-';
+  return Number(v).toLocaleString(undefined, {maximumFractionDigits: 2});
+}
+
+loadData();
+setInterval(loadData, 60000);
+</script>
+</body>
+</html>
