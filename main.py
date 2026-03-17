@@ -11,46 +11,74 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+# =========================
+# HELPERS DE ENV
+# =========================
+def env_str(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip()
+
+
+def env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return float(default)
+    return float(value)
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return int(default)
+    return int(value)
+
+
+def env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() == "true"
+
+
 # =========================
 # CONFIG
 # =========================
-SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
-TIMEFRAME = os.getenv("TIMEFRAME", "15m")
-INITIAL_EQUITY = float(os.getenv("INITIAL_EQUITY", "100000"))
+SYMBOLS = [s.strip() for s in env_str("SYMBOLS", "BTCUSDT,ETHUSDT").split(",") if s.strip()]
+TIMEFRAME = env_str("TIMEFRAME", "15m")
+INITIAL_EQUITY = env_float("INITIAL_EQUITY", 100000)
 
-# Risco base e risco dinâmico por score
-RISK_PCT = float(os.getenv("RISK_PCT", "0.005"))
-BASE_RISK_PCT = float(os.getenv("BASE_RISK_PCT", "0.005"))      # 0.50%
-MEDIUM_RISK_PCT = float(os.getenv("MEDIUM_RISK_PCT", "0.0035")) # 0.35%
-LOW_RISK_PCT = float(os.getenv("LOW_RISK_PCT", "0.002"))        # 0.20%
-MIN_SENTIMENT_SCORE = int(os.getenv("MIN_SENTIMENT_SCORE", "3"))
+RISK_PCT = env_float("RISK_PCT", 0.005)
+BASE_RISK_PCT = env_float("BASE_RISK_PCT", 0.005)
+MEDIUM_RISK_PCT = env_float("MEDIUM_RISK_PCT", 0.0035)
+LOW_RISK_PCT = env_float("LOW_RISK_PCT", 0.002)
+MIN_SENTIMENT_SCORE = env_int("MIN_SENTIMENT_SCORE", 3)
 
-TP1_PCT = float(os.getenv("TP1_PCT", "0.40"))
-TP2_PCT = float(os.getenv("TP2_PCT", "0.25"))
-TP3_PCT = float(os.getenv("TP3_PCT", "0.25"))
-RUNNER_PCT = float(os.getenv("RUNNER_PCT", "0.10"))
+TP1_PCT = env_float("TP1_PCT", 0.40)
+TP2_PCT = env_float("TP2_PCT", 0.25)
+TP3_PCT = env_float("TP3_PCT", 0.25)
+RUNNER_PCT = env_float("RUNNER_PCT", 0.10)
 
-ATR_MULT = float(os.getenv("ATR_MULT", "1.0"))
-MAX_BARS = int(os.getenv("MAX_BARS", "500"))
-VWAP_WHALE_MULT = float(os.getenv("VWAP_WHALE_MULT", "2.0"))
-POC_BINS = int(os.getenv("POC_BINS", "40"))
-ENTRY_OFFSET_BPS = float(os.getenv("ENTRY_OFFSET_BPS", "0"))
-ENABLE_SENTIMENT = os.getenv("ENABLE_SENTIMENT", "true").lower() == "true"
+ATR_MULT = env_float("ATR_MULT", 1.0)
+MAX_BARS = env_int("MAX_BARS", 500)
+VWAP_WHALE_MULT = env_float("VWAP_WHALE_MULT", 2.0)
+POC_BINS = env_int("POC_BINS", 40)
+ENTRY_OFFSET_BPS = env_float("ENTRY_OFFSET_BPS", 0.0)
+ENABLE_SENTIMENT = env_bool("ENABLE_SENTIMENT", True)
 
-STATE_FILE = Path(os.getenv("STATE_FILE", "runtime_state.json"))
-OUTPUT_JSON = Path(os.getenv("OUTPUT_JSON", "docs/data/latest.json"))
+STATE_FILE = Path(env_str("STATE_FILE", "runtime_state.json"))
+OUTPUT_JSON = Path(env_str("OUTPUT_JSON", "docs/data/latest.json"))
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN = env_str("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = env_str("TELEGRAM_CHAT_ID", "")
 
-COINGLASS_API_KEY = os.getenv("COINGLASS_API_KEY", "")
-COINGLASS_BASE_URL = os.getenv("COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com/api")
+COINGLASS_API_KEY = env_str("COINGLASS_API_KEY", "")
+COINGLASS_BASE_URL = env_str("COINGLASS_BASE_URL", "https://open-api-v4.coinglass.com/api")
 
-# Use spot no GitHub para evitar erro 451 em futures
-BINANCE_MARKET_TYPE = os.getenv("BINANCE_MARKET_TYPE", "spot").lower()
-
-# Hobbyist da CoinGlass: 4h, 6h, 8h, 12h, 1d, 1w
-COINGLASS_INTERVAL = os.getenv("COINGLASS_INTERVAL", "4h")
+BINANCE_MARKET_TYPE = env_str("BINANCE_MARKET_TYPE", "spot").lower()
+COINGLASS_INTERVAL = env_str("COINGLASS_INTERVAL", "4h")
 
 
 # =========================
@@ -381,7 +409,6 @@ def score_oi_context(side: str, oi_change_pct: Optional[float], price_now: float
 def score_lsr(side: str, lsr: Optional[float]) -> int:
     if lsr is None:
         return 0
-
     if side == "LONG":
         return safe_bool(lsr < 1.8)
     return safe_bool(lsr > 0.7)
@@ -390,7 +417,6 @@ def score_lsr(side: str, lsr: Optional[float]) -> int:
 def score_funding_proxy(side: str, lsr: Optional[float]) -> int:
     if lsr is None:
         return 0
-
     if side == "LONG":
         return safe_bool(lsr <= 1.2)
     return safe_bool(lsr >= 1.1)
