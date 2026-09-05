@@ -1,18 +1,68 @@
 {
-  "updated_at_utc": "2026-09-05T08:35:48.333648+00:00",
+  "updated_at_utc": "2026-09-05T12:02:52.343836+00:00",
   "equity": 100000.0,
   "positions": {},
   "events": [],
   "snapshots": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "side": "ERROR",
-      "error": "Falha ao buscar candles para BTCUSDT. \u00daltimo erro: 451 Client Error:  for url: https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=500"
+      "side": "WAIT",
+      "price": 79654.2,
+      "atr": 52.96857142857334,
+      "poc": 79673.300625,
+      "wvwap": 79641.7214972932,
+      "structure": "BULLISH",
+      "rsi14": 55.39229276406889,
+      "lsr": null,
+      "oi_change_pct": null,
+      "fng": 73,
+      "cvd_slope": 75.92264,
+      "long_sentiment_score": 1,
+      "short_sentiment_score": 0,
+      "long_sentiment_breakdown": {
+        "funding_proxy": 0,
+        "cvd": 1,
+        "liquidation_proxy": 0,
+        "oi_context": 0,
+        "lsr": 0
+      },
+      "short_sentiment_breakdown": {
+        "funding_proxy": 0,
+        "cvd": 0,
+        "liquidation_proxy": 0,
+        "oi_context": 0,
+        "lsr": 0
+      }
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
-      "side": "ERROR",
-      "error": "Falha ao buscar candles para ETHUSDT. \u00daltimo erro: 451 Client Error:  for url: https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=15m&limit=500"
+      "side": "WAIT",
+      "price": 2455.57,
+      "atr": 1.9871428571429337,
+      "poc": 2450.31625,
+      "wvwap": 2454.722585452412,
+      "structure": "BEARISH",
+      "rsi14": 50.593379138038934,
+      "lsr": null,
+      "oi_change_pct": null,
+      "fng": 73,
+      "cvd_slope": -428.44429999999556,
+      "long_sentiment_score": 0,
+      "short_sentiment_score": 1,
+      "long_sentiment_breakdown": {
+        "funding_proxy": 0,
+        "cvd": 0,
+        "liquidation_proxy": 0,
+        "oi_context": 0,
+        "lsr": 0
+      },
+      "short_sentiment_breakdown": {
+        "funding_proxy": 0,
+        "cvd": 1,
+        "liquidation_proxy": 0,
+        "oi_context": 0,
+        "lsr": 0
+      }
     }
   },
   "config": {
