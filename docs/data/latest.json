@@ -1,68 +1,18 @@
 {
-  "updated_at_utc": "2026-10-30T18:50:33.183486+00:00",
+  "updated_at_utc": "2026-10-30T22:42:46.646162+00:00",
   "equity": 100000.0,
   "positions": {},
   "events": [],
   "snapshots": {
     "BTCUSDT": {
       "symbol": "BTCUSDT",
-      "side": "WAIT",
-      "price": 76692.75,
-      "atr": 253.49571428571238,
-      "poc": 77010.561875,
-      "wvwap": 77237.68256122142,
-      "structure": "BEARISH",
-      "rsi14": 16.162664188084406,
-      "lsr": null,
-      "oi_change_pct": null,
-      "fng": 30,
-      "cvd_slope": -613.4605900000024,
-      "long_sentiment_score": 0,
-      "short_sentiment_score": 1,
-      "long_sentiment_breakdown": {
-        "funding_proxy": 0,
-        "cvd": 0,
-        "liquidation_proxy": 0,
-        "oi_context": 0,
-        "lsr": 0
-      },
-      "short_sentiment_breakdown": {
-        "funding_proxy": 0,
-        "cvd": 1,
-        "liquidation_proxy": 0,
-        "oi_context": 0,
-        "lsr": 0
-      }
+      "side": "ERROR",
+      "error": "Falha ao buscar candles para BTCUSDT. \u00daltimo erro: 451 Client Error:  for url: https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=15m&limit=500"
     },
     "ETHUSDT": {
       "symbol": "ETHUSDT",
-      "side": "WAIT",
-      "price": 2226.35,
-      "atr": 10.474285714285704,
-      "poc": 2253.9705000000004,
-      "wvwap": 2234.353385967544,
-      "structure": "BULLISH",
-      "rsi14": 39.16199274166942,
-      "lsr": null,
-      "oi_change_pct": null,
-      "fng": 30,
-      "cvd_slope": -14964.532200000001,
-      "long_sentiment_score": 0,
-      "short_sentiment_score": 1,
-      "long_sentiment_breakdown": {
-        "funding_proxy": 0,
-        "cvd": 0,
-        "liquidation_proxy": 0,
-        "oi_context": 0,
-        "lsr": 0
-      },
-      "short_sentiment_breakdown": {
-        "funding_proxy": 0,
-        "cvd": 1,
-        "liquidation_proxy": 0,
-        "oi_context": 0,
-        "lsr": 0
-      }
+      "side": "ERROR",
+      "error": "Falha ao buscar candles para ETHUSDT. \u00daltimo erro: 451 Client Error:  for url: https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=15m&limit=500"
     }
   },
   "config": {
